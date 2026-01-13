@@ -4,10 +4,9 @@
  * 功能描述:
  * 1. 管理试井分析曲线的创建、显示、修改和删除。
  * 2. 实现了 PlottingDialog1/2/3/4 的交互逻辑。
- * 3. [修复] 修复了修改曲线时可能导致的闪退问题（增加了数据有效性检查）。
- * 4. [修复] 修复了双坐标图修改后交互指针悬空的问题。
- * 5. [新增] 支持图表标题和图例修改后的反向同步。
- * 6. [新增] 实现了新建曲线时的默认图例命名规则。
+ * 3. [修复] 还原了阶梯图（产量）的正确绘制逻辑，并增加了数组判空检查，防止闪退。
+ * 4. [修复] 在读取表格数据时增加了空指针检查，防止因空行导致的程序崩溃。
+ * 5. [优化] 统一了交互弹窗（QMessageBox, Dialog）的按钮样式为灰底黑字。
  */
 
 #include "wt_plottingwidget.h"
@@ -176,7 +175,7 @@ WT_PlottingWidget::WT_PlottingWidget(QWidget *parent) :
     // 连接数据修改信号
     connect(ui->customPlot, &ChartWidget::graphDataModified, this, &WT_PlottingWidget::onGraphDataModified);
 
-    // [新增] 连接标题和图例修改信号
+    // 连接标题和图例修改信号
     connect(ui->customPlot, &ChartWidget::titleChanged, this, &WT_PlottingWidget::onChartTitleChanged);
     connect(ui->customPlot, &ChartWidget::graphsChanged, this, &WT_PlottingWidget::onChartGraphsChanged);
 
@@ -190,7 +189,7 @@ WT_PlottingWidget::~WT_PlottingWidget()
     delete ui;
 }
 
-// [新增] 处理图表标题变更，同步更新列表和内部数据
+// 处理图表标题变更，同步更新列表和内部数据
 void WT_PlottingWidget::onChartTitleChanged(const QString& newTitle)
 {
     if (m_currentDisplayedCurve.isEmpty()) return;
@@ -222,7 +221,7 @@ void WT_PlottingWidget::onChartTitleChanged(const QString& newTitle)
     m_currentDisplayedCurve = newTitle;
 }
 
-// [新增] 处理图表图例变更
+// 处理图表图例变更
 void WT_PlottingWidget::onChartGraphsChanged()
 {
     if (m_currentDisplayedCurve.isEmpty()) return;
@@ -243,7 +242,6 @@ void WT_PlottingWidget::onChartGraphsChanged()
     else { // Single
         if (plot->graphCount() > 0) info.legendName = plot->graph(0)->name();
     }
-    // 数据已更新至 m_curves，下次重绘将保持此修改
 }
 
 void WT_PlottingWidget::setDataModels(const QMap<QString, QStandardItemModel*>& models) {
@@ -266,10 +264,20 @@ void WT_PlottingWidget::updateChartTitle(const QString& title) {
     }
 }
 
+// [关键修改] 优化对话框样式，显式设置按钮为灰底黑字，防止继承白底
 void WT_PlottingWidget::applyDialogStyle(QWidget* dialog) {
     if(!dialog) return;
     QString qss = "QWidget { color: black; background-color: white; font-family: 'Microsoft YaHei'; }"
-                  "QPushButton { border: 1px solid #bfbfbf; border-radius: 3px; padding: 4px 12px; }";
+                  "QPushButton { "
+                  "   background-color: #f0f0f0; "  // 浅灰背景
+                  "   color: black; "               // 黑色文字
+                  "   border: 1px solid #bfbfbf; "
+                  "   border-radius: 3px; "
+                  "   padding: 5px 15px; "
+                  "   min-width: 60px; "
+                  "}"
+                  "QPushButton:hover { background-color: #e0e0e0; }"
+                  "QPushButton:pressed { background-color: #d0d0d0; }";
     dialog->setStyleSheet(qss);
 }
 
@@ -416,11 +424,25 @@ void WT_PlottingWidget::drawStackedPlot(const CurveInfo& info, ChartWidget* widg
 
     if(info.prodGraphType == 0) { // 阶梯图
         double t_cum = 0;
-        if(!info.x2Data.isEmpty()) { px.append(0); py.append(info.y2Data[0]); }
+
+        // [修复] 还原老版本的阶梯图计算逻辑，但增加了安全性检查防止闪退
+        if(!info.x2Data.isEmpty() && !info.y2Data.isEmpty()) {
+            px.append(0);
+            py.append(info.y2Data[0]);
+        }
+
         for(int i=0; i<info.x2Data.size(); ++i) {
             t_cum += info.x2Data[i];
-            if(i+1 < info.y2Data.size()) { px.append(t_cum); py.append(info.y2Data[i+1]); }
-            else { px.append(t_cum); py.append(info.y2Data[i]); }
+
+            // 安全检查防止越界访问
+            if(i+1 < info.y2Data.size()) {
+                px.append(t_cum);
+                py.append(info.y2Data[i+1]);
+            }
+            else if (i < info.y2Data.size()) {
+                px.append(t_cum);
+                py.append(info.y2Data[i]);
+            }
         }
 
         gProd->setLineStyle(QCPGraph::lsStepLeft);
@@ -583,9 +605,12 @@ void WT_PlottingWidget::on_btn_Manage_clicked() {
                 currentInfo.yData.clear();
 
                 for(int i=0; i<model->rowCount(); ++i) {
-                    if (model->item(i, currentInfo.xCol) && model->item(i, currentInfo.yCol)) {
-                        double xVal = model->item(i, currentInfo.xCol)->text().toDouble();
-                        double yVal = model->item(i, currentInfo.yCol)->text().toDouble();
+                    QStandardItem* itemX = model->item(i, currentInfo.xCol);
+                    QStandardItem* itemY = model->item(i, currentInfo.yCol);
+
+                    if (itemX && itemY) {
+                        double xVal = itemX->text().toDouble();
+                        double yVal = itemY->text().toDouble();
 
                         if(currentInfo.type != 2) {
                             if (xVal > 1e-9 && yVal > 1e-9) {
@@ -622,9 +647,11 @@ void WT_PlottingWidget::on_btn_Manage_clicked() {
                     currentInfo.x2Data.clear();
                     currentInfo.y2Data.clear();
                     for(int i=0; i<model->rowCount(); ++i) {
-                        if (model->item(i, currentInfo.x2Col) && model->item(i, currentInfo.y2Col)) {
-                            currentInfo.x2Data.append(model->item(i, currentInfo.x2Col)->text().toDouble());
-                            currentInfo.y2Data.append(model->item(i, currentInfo.y2Col)->text().toDouble());
+                        QStandardItem* itemX = model->item(i, currentInfo.x2Col);
+                        QStandardItem* itemY = model->item(i, currentInfo.y2Col);
+                        if (itemX && itemY) {
+                            currentInfo.x2Data.append(itemX->text().toDouble());
+                            currentInfo.y2Data.append(itemY->text().toDouble());
                         }
                     }
                 }
@@ -707,9 +734,17 @@ void WT_PlottingWidget::on_btn_NewCurve_clicked() {
         if (m_dataMap.contains(info.sourceFileName)) {
             QStandardItemModel* model = m_dataMap.value(info.sourceFileName);
             for(int i=0; i<model->rowCount(); ++i) {
-                double xVal = model->item(i, info.xCol)->text().toDouble();
-                double yVal = model->item(i, info.yCol)->text().toDouble();
-                if (xVal > 1e-9 && yVal > 1e-9) { info.xData.append(xVal); info.yData.append(yVal); }
+                QStandardItem* itemX = model->item(i, info.xCol);
+                QStandardItem* itemY = model->item(i, info.yCol);
+
+                if (itemX && itemY) {
+                    double xVal = itemX->text().toDouble();
+                    double yVal = itemY->text().toDouble();
+                    if (xVal > 1e-9 && yVal > 1e-9) {
+                        info.xData.append(xVal);
+                        info.yData.append(yVal);
+                    }
+                }
             }
         }
         m_curves.insert(info.name, info);
@@ -756,16 +791,24 @@ void WT_PlottingWidget::on_btn_PressureRate_clicked() {
         if (m_dataMap.contains(info.sourceFileName)) {
             QStandardItemModel* modelP = m_dataMap.value(info.sourceFileName);
             for(int i=0; i<modelP->rowCount(); ++i) {
-                info.xData.append(modelP->item(i, info.xCol)->text().toDouble());
-                info.yData.append(modelP->item(i, info.yCol)->text().toDouble());
+                QStandardItem* itemX = modelP->item(i, info.xCol);
+                QStandardItem* itemY = modelP->item(i, info.yCol);
+                if (itemX && itemY) {
+                    info.xData.append(itemX->text().toDouble());
+                    info.yData.append(itemY->text().toDouble());
+                }
             }
         }
 
         if (m_dataMap.contains(info.sourceFileName2)) {
             QStandardItemModel* modelQ = m_dataMap.value(info.sourceFileName2);
             for(int i=0; i<modelQ->rowCount(); ++i) {
-                info.x2Data.append(modelQ->item(i, info.x2Col)->text().toDouble());
-                info.y2Data.append(modelQ->item(i, info.y2Col)->text().toDouble());
+                QStandardItem* itemX = modelQ->item(i, info.x2Col);
+                QStandardItem* itemY = modelQ->item(i, info.y2Col);
+                if (itemX && itemY) {
+                    info.x2Data.append(itemX->text().toDouble());
+                    info.y2Data.append(itemY->text().toDouble());
+                }
             }
         }
 
@@ -826,12 +869,27 @@ void WT_PlottingWidget::on_btn_Derivative_clicked() {
         info.smoothFactor = dlg.getSmoothFactor();
         if (m_dataMap.contains(info.sourceFileName)) {
             QStandardItemModel* model = m_dataMap.value(info.sourceFileName);
-            double p_shutin = (model->rowCount() > 0) ? model->item(0, info.yCol)->text().toDouble() : 0;
+
+            // 安全读取第一行数据
+            double p_shutin = 0;
+            if (model->rowCount() > 0) {
+                QStandardItem* item0 = model->item(0, info.yCol);
+                if(item0) p_shutin = item0->text().toDouble();
+            }
+
             for(int i=0; i<model->rowCount(); ++i) {
-                double t = model->item(i, info.xCol)->text().toDouble();
-                double p = model->item(i, info.yCol)->text().toDouble();
-                double dp = (info.testType == 0) ? std::abs(info.initialPressure - p) : std::abs(p - p_shutin);
-                if(t > 0 && dp > 0) { info.xData.append(t); info.yData.append(dp); }
+                QStandardItem* itemX = model->item(i, info.xCol);
+                QStandardItem* itemY = model->item(i, info.yCol);
+
+                if (itemX && itemY) {
+                    double t = itemX->text().toDouble();
+                    double p = itemY->text().toDouble();
+                    double dp = (info.testType == 0) ? std::abs(info.initialPressure - p) : std::abs(p - p_shutin);
+                    if(t > 0 && dp > 0) {
+                        info.xData.append(t);
+                        info.yData.append(dp);
+                    }
+                }
             }
         }
         QVector<double> derData = PressureDerivativeCalculator::calculateBourdetDerivative(info.xData, info.yData, info.LSpacing);
@@ -877,9 +935,128 @@ void WT_PlottingWidget::on_btn_Delete_clicked() {
     }
 }
 
+// -----------------------------------------------------------------------------
+// [修改] 优化导出功能的交互体验（提示框样式）
+// -----------------------------------------------------------------------------
+void WT_PlottingWidget::onExportDataTriggered() {
+    if(m_currentDisplayedCurve.isEmpty()) {
+        QMessageBox::warning(this, "提示", "当前没有显示的曲线。");
+        return;
+    }
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("导出数据");
+    msgBox.setText("请选择导出范围：");
+    msgBox.setIcon(QMessageBox::Question);
+    QPushButton* btnAll = msgBox.addButton("全部数据", QMessageBox::ActionRole);
+    QPushButton* btnPart = msgBox.addButton("部分数据", QMessageBox::ActionRole);
+    msgBox.addButton("取消", QMessageBox::RejectRole);
+    applyDialogStyle(&msgBox); // 应用统一的样式
+    msgBox.exec();
+
+    if(msgBox.clickedButton() == btnAll) {
+        executeExport(true);
+    }
+    else if(msgBox.clickedButton() == btnPart) {
+        m_isSelectingForExport = true;
+        m_selectionStep = 1;
+        ui->customPlot->getPlot()->setCursor(Qt::CrossCursor);
+        QMessageBox::information(this, "提示", "请在曲线上点击起始点。");
+    }
+}
+
+void WT_PlottingWidget::onGraphClicked(QCPAbstractPlottable *plottable, int dataIndex, QMouseEvent *event) {
+    Q_UNUSED(event);
+    if(!m_isSelectingForExport) return;
+    QCPGraph* graph = qobject_cast<QCPGraph*>(plottable);
+    if(!graph) return;
+    double key = graph->dataMainKey(dataIndex);
+    if(m_selectionStep == 1) {
+        m_exportStartIndex = key;
+        m_selectionStep = 2;
+        QMessageBox::information(this, "提示", "请点击结束点。");
+    } else {
+        m_exportEndIndex = key;
+        if(m_exportStartIndex > m_exportEndIndex) std::swap(m_exportStartIndex, m_exportEndIndex);
+        m_isSelectingForExport = false;
+        ui->customPlot->getPlot()->setCursor(Qt::ArrowCursor);
+        executeExport(false, m_exportStartIndex, m_exportEndIndex);
+    }
+}
+
+void WT_PlottingWidget::executeExport(bool fullRange, double start, double end) {
+    QString dir = ModelParameter::instance()->getProjectPath();
+    if (dir.isEmpty()) dir = QDir::currentPath();
+    QString name = dir + "/export.csv";
+    QString file = QFileDialog::getSaveFileName(this, "保存", name, "CSV Files (*.csv);;Excel Files (*.xls);;Text Files (*.txt)");
+    if(file.isEmpty()) return;
+    QFile f(file);
+    if(!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream out(&f);
+    QString sep = ",";
+    if(file.endsWith(".txt") || file.endsWith(".xls")) sep = "\t";
+
+    CurveInfo& info = m_curves[m_currentDisplayedCurve];
+
+    if(ui->customPlot->getChartMode() == ChartWidget::Mode_Stacked) {
+        if (!m_graphPress || !m_graphProd) return;
+
+        out << (fullRange ? "Time,P,Q\n" : "AdjTime,P,Q,OrigTime\n");
+
+        auto dataPtr = m_graphPress->data();
+        for (auto it = dataPtr->begin(); it != dataPtr->end(); ++it) {
+            double t = it->key;
+            if(!fullRange && (t < start || t > end)) continue;
+
+            double p = it->value;
+            double q = getProductionValueFromGraph(t, m_graphProd);
+
+            if(fullRange) out << t << sep << p << sep << q << "\n";
+            else out << (t-start) << sep << p << sep << q << sep << t << "\n";
+        }
+    } else {
+        QCPGraph* graph = ui->customPlot->getPlot()->graphCount() > 0 ? ui->customPlot->getPlot()->graph(0) : nullptr;
+        if (graph) {
+            out << (fullRange ? "Time,Value\n" : "AdjTime,Value,OrigTime\n");
+            auto dataPtr = graph->data();
+            for (auto it = dataPtr->begin(); it != dataPtr->end(); ++it) {
+                double t = it->key;
+                if(!fullRange && (t < start || t > end)) continue;
+                double val = it->value;
+                if(fullRange) out << t << sep << val << "\n";
+                else out << (t-start) << sep << val << sep << t << "\n";
+            }
+        } else {
+            out << (fullRange ? "Time,Value\n" : "AdjTime,Value,OrigTime\n");
+            for(int i=0; i<info.xData.size(); ++i) {
+                double t = info.xData[i];
+                if(!fullRange && (t < start || t > end)) continue;
+                double val = info.yData[i];
+                if(fullRange) out << t << sep << val << "\n";
+                else out << (t-start) << sep << val << sep << t << "\n";
+            }
+        }
+    }
+    f.close();
+    QMessageBox::information(this, "成功", "导出完成。");
+}
+
+double WT_PlottingWidget::getProductionValueFromGraph(double t, QCPGraph* graph) {
+    if (!graph) return 0.0;
+    auto data = graph->data();
+    auto it = data->findBegin(t);
+    if (it == data->end()) return 0.0;
+    if (qAbs(it->key - t) < 1e-9) return it->value;
+    if (it == data->begin()) return it->value;
+    auto prev = it;
+    --prev;
+    double t1 = prev->key;
+    double v1 = prev->value;
+    double t2 = it->key;
+    double v2 = it->value;
+    if (qAbs(t2 - t1) < 1e-9) return v1;
+    return v1 + (t - t1) * (v2 - v1) / (t2 - t1);
+}
+
 double WT_PlottingWidget::getProductionValueAt(double t, const CurveInfo& info) { Q_UNUSED(t); return info.y2Data.isEmpty() ? 0 : info.y2Data.last(); }
 QListWidgetItem* WT_PlottingWidget::getCurrentSelectedItem() { return ui->listWidget_Curves->currentItem(); }
-void WT_PlottingWidget::onExportDataTriggered() { /* (保持原逻辑) */ executeExport(true); }
-void WT_PlottingWidget::onGraphClicked(QCPAbstractPlottable *plottable, int dataIndex, QMouseEvent *event) { /* (保持原逻辑) */ }
-void WT_PlottingWidget::executeExport(bool fullRange, double start, double end) { /* (保持原逻辑) */ }
-double WT_PlottingWidget::getProductionValueFromGraph(double t, QCPGraph* graph) { /* (保持原逻辑) */ return 0; }
+

@@ -6,6 +6,7 @@
  * 2. 实现了多文件同时打开的功能。
  * 3. 实现了数据的同步保存与恢复。
  * 4. [保留优化] 实现了 getAllDataModels，遍历所有页签收集数据模型。
+ * 5. [新增] 增加了 applyDataDialogStyle 函数，统一数据界面弹窗的按钮样式为“灰底黑字”，解决看不清的问题。
  */
 
 #include "wt_datawidget.h"
@@ -19,6 +20,25 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
+
+// [新增] 静态辅助函数：强制应用“灰底黑字”的按钮样式
+// 解决某些弹窗按钮背景为白色导致看不清文字的问题
+static void applyDataDialogStyle(QWidget* dialog) {
+    if (!dialog) return;
+    QString qss = "QWidget { color: black; background-color: white; font-family: 'Microsoft YaHei'; }"
+                  "QPushButton { "
+                  "   background-color: #f0f0f0; "  // 浅灰背景，确保与文字对比度
+                  "   color: black; "               // 黑色文字
+                  "   border: 1px solid #bfbfbf; "  // 灰色边框
+                  "   border-radius: 3px; "
+                  "   padding: 5px 15px; "
+                  "   min-width: 70px; "
+                  "}"
+                  "QPushButton:hover { background-color: #e0e0e0; }"
+                  "QPushButton:pressed { background-color: #d0d0d0; }";
+    dialog->setStyleSheet(qss);
+}
 
 WT_DataWidget::WT_DataWidget(QWidget *parent) :
     QWidget(parent),
@@ -128,6 +148,9 @@ void WT_DataWidget::onOpenFile()
         }
 
         DataImportDialog dlg(path, this);
+        // [修改] 应用统一的灰色按钮样式，防止按钮看不清
+        applyDataDialogStyle(&dlg);
+
         if (dlg.exec() == QDialog::Accepted) {
             DataImportSettings settings = dlg.getSettings();
             createNewTab(path, settings);
@@ -160,6 +183,9 @@ void WT_DataWidget::loadData(const QString& filePath, const QString& fileType)
     }
 
     DataImportDialog dlg(filePath, this);
+    // [修改] 应用统一的灰色按钮样式
+    applyDataDialogStyle(&dlg);
+
     if (dlg.exec() == QDialog::Accepted) {
         createNewTab(filePath, dlg.getSettings());
     }
@@ -177,7 +203,14 @@ void WT_DataWidget::onSave() {
     ModelParameter::instance()->saveTableData(allData);
     ModelParameter::instance()->saveProject();
 
-    QMessageBox::information(this, "保存", "所有标签页数据已同步保存到项目文件。");
+    // [修改] 使用 QMessageBox 对象替代静态调用，以便应用样式
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("保存");
+    msgBox.setText("所有标签页数据已同步保存到项目文件。");
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.addButton(QMessageBox::Ok);
+    applyDataDialogStyle(&msgBox); // 强制应用灰色按钮样式
+    msgBox.exec();
 }
 
 void WT_DataWidget::loadFromProjectData() {
@@ -270,3 +303,4 @@ void WT_DataWidget::onSheetDataChanged() {
         emit dataChanged();
     }
 }
+

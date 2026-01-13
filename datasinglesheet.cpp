@@ -7,6 +7,7 @@
  * 3. [关键修复] 提供了 onDefineColumns, onTimeConvert 等槽函数的完整实现。
  * 4. [关键修复] 修复了保存数据时的闪退问题。
  * 5. 实现了 Ctrl+滚轮 缩放功能。
+ * 6. [新增] 强制应用样式表到所有交互弹窗，解决按钮看不清的问题。
  */
 
 #include "datasinglesheet.h"
@@ -44,7 +45,42 @@
 #include <QWheelEvent>
 
 // ============================================================================
-// 内部类：InternalSplitDialog (保持不变)
+// [新增] 静态辅助函数：强制应用“灰底黑字”的按钮样式
+// ============================================================================
+static void applySheetDialogStyle(QWidget* dialog) {
+    if (!dialog) return;
+    // 强制设置背景色为白色，文字为黑色，按钮为浅灰色
+    QString qss = "QWidget { color: black; background-color: white; font-family: 'Microsoft YaHei'; }"
+                  "QPushButton { "
+                  "   background-color: #f0f0f0; "  // 浅灰背景
+                  "   color: black; "               // 黑色文字
+                  "   border: 1px solid #bfbfbf; "
+                  "   border-radius: 3px; "
+                  "   padding: 5px 15px; "
+                  "   min-width: 70px; "
+                  "}"
+                  "QPushButton:hover { background-color: #e0e0e0; }"
+                  "QPushButton:pressed { background-color: #d0d0d0; }"
+                  "QLabel { color: black; }"
+                  "QLineEdit { color: black; background-color: white; border: 1px solid #ccc; }"
+                  "QGroupBox { color: black; border: 1px solid #ccc; margin-top: 20px; }"
+                  "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 3px; }";
+    dialog->setStyleSheet(qss);
+}
+
+// [新增] 辅助函数：显示带样式的消息框
+static void showStyledMessage(QWidget* parent, QMessageBox::Icon icon, const QString& title, const QString& text) {
+    QMessageBox msgBox(parent);
+    msgBox.setWindowTitle(title);
+    msgBox.setText(text);
+    msgBox.setIcon(icon);
+    msgBox.addButton(QMessageBox::Ok);
+    applySheetDialogStyle(&msgBox);
+    msgBox.exec();
+}
+
+// ============================================================================
+// 内部类：InternalSplitDialog
 // ============================================================================
 class InternalSplitDialog : public QDialog
 {
@@ -52,7 +88,8 @@ public:
     explicit InternalSplitDialog(QWidget *parent = nullptr) : QDialog(parent) {
         setWindowTitle("数据分列");
         resize(300, 200);
-        setStyleSheet("background-color: white; color: black;");
+        // 使用统一的样式函数覆盖默认设置
+        applySheetDialogStyle(this);
 
         QVBoxLayout* layout = new QVBoxLayout(this);
         QGroupBox* group = new QGroupBox("选择分隔符");
@@ -226,7 +263,7 @@ bool DataSingleSheet::loadExcelFile(const QString& path, const DataImportSetting
 {
     if(path.endsWith(".xlsx", Qt::CaseInsensitive)) {
         QXlsx::Document xlsx(path);
-        if(!xlsx.load()) { QMessageBox::critical(this,"错误","无法加载.xlsx文件"); return false; }
+        if(!xlsx.load()) { showStyledMessage(this, QMessageBox::Critical, "错误", "无法加载.xlsx文件"); return false; }
         if(xlsx.currentWorksheet()==nullptr && !xlsx.sheetNames().isEmpty()) xlsx.selectSheet(xlsx.sheetNames().first());
         int maxRow = xlsx.dimension().lastRow(); int maxCol = xlsx.dimension().lastColumn();
         if(maxRow<1||maxCol<1) return true;
@@ -306,11 +343,11 @@ void DataSingleSheet::onExportExcel()
         if (ui->dataTableView->isRowHidden(row)) xlsx.setRowHidden(row + 2, true);
         for (int col = 0; col < colCount; ++col) {
             QStandardItem* item = m_dataModel->item(row, col);
-            if (!item) continue; // 关键修复：防止空指针崩溃
+            if (!item) continue;
 
             QVariant value = item->data(Qt::DisplayRole);
             QString strVal = value.toString();
-            QXlsx::Format cellFormat; // 简化样式，防止过度复杂
+            QXlsx::Format cellFormat;
 
             if (strVal.startsWith("=")) {
                 xlsx.write(row + 2, col + 1, strVal, cellFormat);
@@ -326,9 +363,8 @@ void DataSingleSheet::onExportExcel()
         }
     }
 
-    // 合并单元格逻辑... (略，保持原逻辑)
-    if (xlsx.saveAs(path)) QMessageBox::information(this, "成功", "数据已成功导出！");
-    else QMessageBox::warning(this, "失败", "导出失败，请检查文件是否被占用。");
+    if (xlsx.saveAs(path)) showStyledMessage(this, QMessageBox::Information, "成功", "数据已成功导出！");
+    else showStyledMessage(this, QMessageBox::Warning, "失败", "导出失败，请检查文件是否被占用。");
 }
 
 void DataSingleSheet::onCustomContextMenu(const QPoint& pos) {
@@ -346,7 +382,6 @@ void DataSingleSheet::onShowAllRows() { for(int i=0; i<m_dataModel->rowCount(); 
 void DataSingleSheet::onHideCol() { QModelIndexList s = ui->dataTableView->selectionModel()->selectedColumns(); if(s.isEmpty()) { QModelIndex i=ui->dataTableView->currentIndex(); if(i.isValid()) ui->dataTableView->setColumnHidden(i.column(),true); } else for(auto i:s) ui->dataTableView->setColumnHidden(i.column(),true); }
 void DataSingleSheet::onShowAllCols() { for(int i=0; i<m_dataModel->columnCount(); ++i) ui->dataTableView->setColumnHidden(i, false); }
 
-// [修复警告] 将 9e9 修改为 2147483647 (INT_MAX)
 void DataSingleSheet::onMergeCells() {
     auto s=ui->dataTableView->selectionModel()->selectedIndexes();
     if(s.isEmpty())return;
@@ -393,7 +428,7 @@ void DataSingleSheet::onSplitColumn() {
 }
 
 // ============================================================================
-// [关键修复] 以下函数重新实现了被省略的逻辑，确保按钮点击有反应
+// [修改] 为所有弹窗应用样式
 // ============================================================================
 
 void DataSingleSheet::onDefineColumns() {
@@ -402,6 +437,8 @@ void DataSingleSheet::onDefineColumns() {
         h << m_dataModel->headerData(i, Qt::Horizontal).toString();
 
     DataColumnDialog d(h, m_columnDefinitions, this);
+    applySheetDialogStyle(&d); // 应用样式
+
     if(d.exec() == QDialog::Accepted){
         m_columnDefinitions = d.getColumnDefinitions();
         for(int i=0; i<m_columnDefinitions.size(); ++i)
@@ -418,11 +455,13 @@ void DataSingleSheet::onTimeConvert() {
         h << m_dataModel->headerData(i, Qt::Horizontal).toString();
 
     TimeConversionDialog d(h, this);
+    applySheetDialogStyle(&d); // 应用样式
+
     if(d.exec() == QDialog::Accepted){
         auto cfg = d.getConversionConfig();
         auto res = calc.convertTimeColumn(m_dataModel, m_columnDefinitions, cfg);
-        if(res.success) QMessageBox::information(this, "成功", "时间列转换完成");
-        else QMessageBox::warning(this, "失败", res.errorMessage);
+        if(res.success) showStyledMessage(this, QMessageBox::Information, "成功", "时间列转换完成");
+        else showStyledMessage(this, QMessageBox::Warning, "失败", res.errorMessage);
         emit dataChanged();
     }
 }
@@ -430,8 +469,8 @@ void DataSingleSheet::onTimeConvert() {
 void DataSingleSheet::onPressureDropCalc() {
     DataCalculate calc;
     auto res = calc.calculatePressureDrop(m_dataModel, m_columnDefinitions);
-    if(res.success) QMessageBox::information(this, "成功", "压降计算完成");
-    else QMessageBox::warning(this, "失败", res.errorMessage);
+    if(res.success) showStyledMessage(this, QMessageBox::Information, "成功", "压降计算完成");
+    else showStyledMessage(this, QMessageBox::Warning, "失败", res.errorMessage);
     emit dataChanged();
 }
 
@@ -442,11 +481,13 @@ void DataSingleSheet::onCalcPwf() {
         h << m_dataModel->headerData(i, Qt::Horizontal).toString();
 
     PwfCalculationDialog d(h, this);
+    applySheetDialogStyle(&d); // 应用样式
+
     if(d.exec() == QDialog::Accepted){
         auto cfg = d.getConfig();
         auto res = calc.calculateBottomHolePressure(m_dataModel, m_columnDefinitions, cfg);
-        if(res.success) QMessageBox::information(this, "成功", "井底流压计算完成");
-        else QMessageBox::warning(this, "失败", res.errorMessage);
+        if(res.success) showStyledMessage(this, QMessageBox::Information, "成功", "井底流压计算完成");
+        else showStyledMessage(this, QMessageBox::Warning, "失败", res.errorMessage);
         emit dataChanged();
     }
 }
@@ -470,7 +511,7 @@ void DataSingleSheet::onHighlightErrors() {
             }
         }
     }
-    QMessageBox::information(this, "检查完成", QString("发现 %1 个错误。").arg(err));
+    showStyledMessage(this, QMessageBox::Information, "检查完成", QString("发现 %1 个错误。").arg(err));
 }
 
 void DataSingleSheet::onModelDataChanged() { emit dataChanged(); }
@@ -500,7 +541,6 @@ void DataSingleSheet::loadFromJson(const QJsonObject& jsonSheet) {
     deserializeRows(rows);
 }
 
-// [关键修复] 检查空指针，防止崩溃
 QJsonArray DataSingleSheet::serializeRows() const {
     QJsonArray a;
     for(int i=0; i<m_dataModel->rowCount(); ++i) {
@@ -526,3 +566,4 @@ void DataSingleSheet::deserializeRows(const QJsonArray& array) {
         m_dataModel->appendRow(l);
     }
 }
+

@@ -2,10 +2,10 @@
  * 文件名: chartwidget.cpp
  * 文件作用: 通用图表组件实现文件
  * 功能描述:
- * 1. [修复] 将 m_plot->legend->parentLayout() 修改为 ->layout()，解决编译错误。
- * 2. 修复了切换图表模式（单坐标/双坐标）时图例消失的问题。
- * 3. 实现了对 "Apply" 和 "OK" 操作的统一变更检测。
- * 4. 确保图例始终依附于最新的坐标轴矩形右上角。
+ * 1. [修复] setChartMode 中使用 take() 安全移除图例，防止 Layout 析构导致图例对象被删除，解决闪退。
+ * 2. 封装 QCustomPlot，提供标准化的图表显示和交互功能。
+ * 3. 支持单坐标（Mode_Single）和双坐标（Mode_Stacked）模式切换。
+ * 4. 实现了标识线、标注、数据移动、缩放和图片导出等功能。
  */
 
 #include "chartwidget.h"
@@ -171,23 +171,24 @@ void ChartWidget::clearGraphs() {
     setZoomDragMode(Qt::Horizontal | Qt::Vertical);
 }
 
-// [修复] 在切换模式重建布局时，确保图例被重新添加到新的 AxisRect 中
+// [核心修复] 在切换模式重建布局时，确保图例被安全地保留并重新添加到新的 AxisRect 中
 void ChartWidget::setChartMode(ChartMode mode) {
     if (m_chartMode == mode) return;
     m_chartMode = mode;
 
     exitMoveDataMode();
 
-    // 清除旧的布局元素 (保留标题)
+    // 1. 清除旧的布局元素 (保留标题)
     int rowCount = m_plot->plotLayout()->rowCount();
     for(int i = rowCount - 1; i > 0; --i) {
         m_plot->plotLayout()->removeAt(i);
     }
     m_plot->plotLayout()->simplify();
 
-    // [关键修复] 将图例从旧的布局中移除（防止野指针或布局错乱），使用 layout() 而不是 parentLayout()
-    if (m_plot->legend->layout()) {
-        m_plot->legend->layout()->remove(m_plot->legend);
+    // 2. [安全移除图例] 使用 take() 而不是 remove()
+    // 这样做可以确保图例对象从布局中剥离，但所有权仍归 QCustomPlot (或者悬空)，防止被 Layout 析构时连带删除
+    if (m_plot->legend && m_plot->legend->layout()) {
+        m_plot->legend->layout()->take(m_plot->legend);
     }
 
     if (mode == Mode_Single) {
@@ -199,7 +200,9 @@ void ChartWidget::setChartMode(ChartMode mode) {
         setZoomDragMode(Qt::Horizontal | Qt::Vertical);
 
         // 将图例重新添加到新的 defaultRect
-        defaultRect->insetLayout()->addElement(m_plot->legend, Qt::AlignTop | Qt::AlignRight);
+        if (defaultRect->insetLayout() && m_plot->legend) {
+            defaultRect->insetLayout()->addElement(m_plot->legend, Qt::AlignTop | Qt::AlignRight);
+        }
 
     } else if (mode == Mode_Stacked) {
         m_topRect = new QCPAxisRect(m_plot);
@@ -219,10 +222,12 @@ void ChartWidget::setChartMode(ChartMode mode) {
                 m_topRect->axis(QCPAxis::atBottom), SLOT(setRange(QCPRange)));
 
         // 将图例重新添加到顶部的 m_topRect
-        m_topRect->insetLayout()->addElement(m_plot->legend, Qt::AlignTop | Qt::AlignRight);
+        if (m_topRect->insetLayout() && m_plot->legend) {
+            m_topRect->insetLayout()->addElement(m_plot->legend, Qt::AlignTop | Qt::AlignRight);
+        }
     }
 
-    m_plot->legend->setVisible(true); // 确保可见
+    if (m_plot->legend) m_plot->legend->setVisible(true); // 确保可见
     m_plot->replot();
 }
 
@@ -639,3 +644,4 @@ void ChartWidget::deleteSelectedItems() {
     }
     m_plot->replot();
 }
+
